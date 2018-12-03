@@ -9,8 +9,7 @@ pymobiledevice
 Requirements
 --------------
 Python 3.5
-M2Crypto
-AK-Construct
+PyOpenSSL
 
 
 Lockdownd.py [com.apple.lockownd]
