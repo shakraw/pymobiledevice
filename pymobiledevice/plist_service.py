@@ -21,14 +21,14 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 #
-
-
+import logging
 import ssl
 import struct
 import plistlib
 from re import sub
-from ak_vendor.usbmux import default_mux as mux
+from pymobiledevice.usbmux import usbmux
 
+mux = usbmux.USBMux()
 
 class PlistService(object):
 
@@ -46,10 +46,10 @@ class PlistService(object):
                 for d in mux.devices:
                     if d.serial == udid:
                         dev = d
-                        print("Connecting to device: " + dev.serial)
+                        logging.debug("Connecting to device: " + dev.serial)
             else:
                 dev = mux.devices[0]
-                print("Connecting to device: " + dev.serial)
+                logging.debug("Connecting to device: " + dev.serial)
 
         try:
             self.s = mux.connect(dev, self.port)
@@ -67,7 +67,7 @@ class PlistService(object):
         try:
             self.s.send(data)
         except:
-            print("Sending data to device failled")
+            logging.debug("Sending data to device failled")
             return -1
         return 0
 

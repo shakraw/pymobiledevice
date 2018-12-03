@@ -1,9 +1,11 @@
 import glob
+import logging
 import plistlib
 import os
 import pickle
 import gzip
 from optparse import Option
+from pymobiledevice.util.bplist import BPlistReader
 
 
 def read_file(filename):
@@ -51,13 +53,19 @@ def writeHomeFile(foldername, filename, data):
 
 def readPlist(filename):
     f = open(filename, "rb")
-    f.read(16)
+    d = f.read(16)
     f.close()
-    return plistlib.readPlist(filename)
+    if d.startswith("bplist"):
+        return BPlistReader.plistWithFile(filename)
+    else:
+        return plistlib.readPlist(filename)
 
 
 def parsePlist(s):
-    return plistlib.readPlistFromString(s)
+    if s.startswith("bplist"):
+        return BPlistReader.plistWithString(s)
+    else:
+        return plistlib.readPlistFromString(s)
 
 # http://stackoverflow.com/questions/1094841/reusable-library-to-get-human-readable-version-of-file-size
 
@@ -96,6 +104,7 @@ def xor_strings(a, b):
         r += chr(ord(a[i]) ^ ord(b[i]))
     return r
 
+
 hex = lambda data: " ".join("%02X" % ord(i) for i in data)
 ascii = lambda data: "".join(c if 31 < ord(c) < 127 else "." for c in data)
 
@@ -103,7 +112,7 @@ ascii = lambda data: "".join(c if 31 < ord(c) < 127 else "." for c in data)
 def hexdump(d):
     for i in range(0, len(d), 16):
         data = d[i:i + 16]
-        print("%08X | %s | %s" % (i, hex(data).ljust(47), ascii(data)))
+        logging.debug("%08X | %s | %s" % (i, hex(data).ljust(47), ascii(data)))
 
 
 def search_plist(directory, matchDict):
@@ -116,7 +125,7 @@ def search_plist(directory, matchDict):
                     ok = False
                     break
             if ok:
-                print("Using plist file %s" % p)
+                logging.debug("Using plist file %s" % p)
                 return d
         except:
             continue

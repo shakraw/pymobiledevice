@@ -28,7 +28,7 @@ import uuid
 import plistlib
 import platform
 
-from ak_vendor.usbmux import default_mux as mux
+from pymobiledevice.usbmux import usbmux
 
 from pymobiledevice.ca import ca_do_everything
 from pymobiledevice.plist_service import PlistService
@@ -67,6 +67,7 @@ MAXTRIES = 20
 
 
 def list_devices():
+    mux = usbmux.USBMux()
     mux.process(1)
     return [d.serial for d in mux.devices]
 
@@ -84,17 +85,21 @@ class LockdownClient(object):
 
         assert self.queryType() == "com.apple.mobile.lockdown"
 
-        self.udid = udid
+        #self.udid = udid
         self.allValues = self.getValue()
+        self.udid = self.allValues.get("UniqueDeviceID")
         self.UniqueChipID = self.allValues.get("UniqueChipID")
-        self.DevicePublicKey = self.getValue("", "DevicePublicKey")
+        self.DevicePublicKey = self.allValues.get("DevicePublicKey")
+        self.ios_version = self.allValues.get("ProductVersion")
         self.identifier = self.udid
         if not self.identifier:
             if self.UniqueChipID:
                 self.identifier = "%x" % self.UniqueChipID
             else:
-                print("Could not get UDID or ECID, failing")
-                raise
+                raise Exception("Could not get UDID or ECID, failing")
+
+        self.c.close()
+        self.c = PlistService(62078, self.identifier)
 
         if not self.validate_pairing():
             self.pair()
@@ -142,8 +147,7 @@ class LockdownClient(object):
             if sys.platform[0:5] == "linux":
                 folder = "/var/lib/lockdown/"
         try:
-            pair_record = plistlib.readPlist(
-                folder + "%s.plist" % self.identifier)
+            pair_record = plistlib.readPlist(folder + "%s.plist" % self.identifier)
         except:
             pair_record = None
         if pair_record:
@@ -152,43 +156,51 @@ class LockdownClient(object):
             privateKeyPem = pair_record["HostPrivateKey"].data
 
         else:
-            print("No iTunes pairing record found for device %s" %
-                  self.identifier)
+            # LucaV 05.09.2018: se la data del file non corrisponde alla data odierna, richiede il pairing
+            device_data_file = os.path.join(os.path.expanduser('~'), HOMEFOLDER, "%s.plist" % self.identifier)
+            if os.path.isfile(device_data_file):
+                from datetime import datetime, timedelta
+                file_date = datetime.fromtimestamp(os.path.getmtime(device_data_file))
+                file_date = file_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                if today - file_date > timedelta(days=1):
+                    try:
+                        os.remove(device_data_file)
+                    except:
+                        pass
+
+            print("No iTunes pairing record found for device %s" % self.identifier)
             print("Looking for pymobiledevice pairing record")
             record = readHomeFile(HOMEFOLDER, "%s.plist" % self.identifier)
             if record:
-                pair_record = plistlib.loads(record)
-                print("Found pymobiledevice pairing record for device %s" %
-                      self.udid)
+                # pair_record = plistlib.loads(record)
+                pair_record = plistlib.readPlistFromBytes(record)
+                print("Found pymobiledevice pairing record for device %s" % self.udid)
                 certPem = pair_record["HostCertificate"].data
                 privateKeyPem = pair_record["HostPrivateKey"].data
             else:
-                print("No  pymobiledevice pairing record found for device %s" %
-                      self.identifier)
+                print("No  pymobiledevice pairing record found for device %s" % self.identifier)
                 return False
 
-        ValidatePair = {"Label": self.label,
-                        "Request": "ValidatePair", "PairRecord": pair_record}
-        self.c = PlistService(62078, self.udid)
-        self.c.sendPlist(ValidatePair)
-        r = self.c.recvPlist()
-        if not r or "Error" in r:
-            pair_record = None
-            print("ValidatePair fail", ValidatePair)
-            return False
+        self.record = pair_record
+        if not self.ios_version.startswith(('11', '12')):
+            ValidatePair = {"Label": self.label, "Request": "ValidatePair", "PairRecord": pair_record}
+            self.c.sendPlist(ValidatePair)
+            r = self.c.recvPlist()
+            if not r or "Error" in r:
+                pair_record = None
+                print("ValidatePair fail", ValidatePair)
+                return False
 
         self.hostID = pair_record.get("HostID", self.hostID)
         self.SystemBUID = pair_record.get("SystemBUID", self.SystemBUID)
-        d = {"Label": self.label, "Request": "StartSession",
-             "HostID": self.hostID, 'SystemBUID': self.SystemBUID}
+        d = {"Label": self.label, "Request": "StartSession", "HostID": self.hostID, 'SystemBUID': self.SystemBUID}
         self.c.sendPlist(d)
         startsession = self.c.recvPlist()
         self.SessionID = startsession.get("SessionID")
         if startsession.get("EnableSessionSSL"):
             sslfile = self.identifier + "_ssl.txt"
-            # print(HOMEFOLDER, sslfile, certPem, "\n", privateKeyPem)
-            sslfile = writeHomeFile(
-                HOMEFOLDER, sslfile, certPem + b"\n" + privateKeyPem)
+            sslfile = writeHomeFile(HOMEFOLDER, sslfile, certPem + b"\n" + privateKeyPem)
             self.c.ssl_start(sslfile, sslfile)
 
         self.paired = True
@@ -201,8 +213,7 @@ class LockdownClient(object):
             return False
 
         print("Creating host key & certificate")
-        certPem, privateKeyPem, DeviceCertificate = ca_do_everything(
-            self.DevicePublicKey)
+        certPem, privateKeyPem, DeviceCertificate = ca_do_everything(self.DevicePublicKey)
 
         pair_record = {"DevicePublicKey": plistlib.Data(self.DevicePublicKey),
                        "DeviceCertificate": plistlib.Data(DeviceCertificate),
@@ -211,17 +222,14 @@ class LockdownClient(object):
                        "RootCertificate": plistlib.Data(certPem),
                        "SystemBUID": "30142955-444094379208051516"}
 
-        pair = {"Label": self.label, "Request": "Pair",
-                "PairRecord": pair_record}
-        self.c = PlistService(62078, self.udid)
+        pair = {"Label": self.label, "Request": "Pair", "PairRecord": pair_record}
         self.c.sendPlist(pair)
         pair = self.c.recvPlist()
 
         if pair and pair.get("Result") == "Success" or "EscrowBag" in pair:
             pair_record["HostPrivateKey"] = plistlib.Data(privateKeyPem)
             pair_record["EscrowBag"] = pair.get("EscrowBag")
-            writeHomeFile(HOMEFOLDER, "%s.plist" %
-                          self.identifier, plistlib.dumps(pair_record))
+            writeHomeFile(HOMEFOLDER, "%s.plist" % self.identifier, plistlib.dumps(pair_record))
             self.paired = True
             return True
 
@@ -236,10 +244,7 @@ class LockdownClient(object):
 
     def getValue(self, domain=None, key=None):
 
-        if(
-                isinstance(key, str) and
-                hasattr(self, 'record')and
-                hasattr(self.record, key)):
+        if(isinstance(key, str) and hasattr(self, 'record') and hasattr(self.record, key)):
             return self.record[key]
 
         req = {"Request": "GetValue", "Label": self.label}
@@ -257,7 +262,7 @@ class LockdownClient(object):
                 return r.data
             return r
 
-    def setValue(self, domain=None, key=None):
+    def setValue(self, value, domain=None, key=None):
 
         req = {"Request": "SetValue", "Label": self.label}
 
@@ -266,6 +271,7 @@ class LockdownClient(object):
         if key:
             req["Key"] = key
 
+        req["Value"] = value
         self.c.sendPlist(req)
         res = self.c.recvPlist()
         print(res)
@@ -276,8 +282,7 @@ class LockdownClient(object):
             print("NotPaired")
             raise NotPairedError
 
-        self.c.sendPlist(
-            {"Label": self.label, "Request": "StartService", "Service": name})
+        self.c.sendPlist({"Label": self.label, "Request": "StartService", "Service": name})
         StartService = self.c.recvPlist()
         if not StartService or StartService.get("Error"):
             raise StartServiceError(StartService.get("Error"))
@@ -291,11 +296,11 @@ class LockdownClient(object):
         if (not escrowBag):
             escrowBag = self.record['EscrowBag']
 
-        self.c.sendPlist({
-            "Label": self.label, "Request": "StartService", "Service": name,
-            'EscrowBag': plistlib.Data(escrowBag)})
+        self.c.sendPlist({"Label": self.label, "Request": "StartService", "Service": name, 'EscrowBag':escrowBag})
         StartService = self.c.recvPlist()
         if not StartService or StartService.get("Error"):
+            if StartService.get("Error", "") == 'PasswordProtected':
+                raise StartServiceError('your device is protected with password, please enter password in device and try again')
             raise StartServiceError(StartService.get("Error"))
         return PlistService(StartService.get("Port"), self.udid)
 
@@ -303,8 +308,7 @@ class LockdownClient(object):
 if __name__ == "__main__":
     l = LockdownClient()
     if l:
-        n = writeHomeFile(HOMEFOLDER, "%s_infos.plist" %
-                          l.udid, plistlib.dumps(l.allValues))
+        n = writeHomeFile(HOMEFOLDER, "%s_infos.plist" % l.udid, plistlib.dumps(l.allValues))
         print("Wrote infos to %s" % n)
     else:
         print("Unable to connect to device")
