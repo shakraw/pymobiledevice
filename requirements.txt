@@ -1,3 +1,1 @@
-ak-construct==2.5.2
-ak-M2Crypto==0.24.0
-ak-vendor==0.6.0
+pyOpenSSL==17.0.0
