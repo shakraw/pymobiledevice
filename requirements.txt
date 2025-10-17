@@ -1,4 +1,4 @@
-M2Crypto==0.38.0 ; sys_platform == 'darwin'
+pyOpenSSL>=23.1.1
 construct>=2.9.29
 future
 pyasn1
